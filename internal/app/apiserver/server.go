@@ -1,23 +1,37 @@
 package apiserver
 
 import (
+	"encoding/json"
+	"errors"
+	"github.com/Satan3/go-rest-api/internal/app/model"
 	"github.com/Satan3/go-rest-api/internal/app/store"
 	"github.com/gorilla/mux"
+	"github.com/gorilla/sessions"
 	"github.com/sirupsen/logrus"
 	"net/http"
 )
 
+const (
+	sessionName = "go-rest-api"
+)
+
+var (
+	errIncorrectEmailOrPassword = errors.New("incorrect email or password")
+)
+
 type server struct {
-	router *mux.Router
-	logger *logrus.Logger
-	store  store.Store
+	router       *mux.Router
+	logger       *logrus.Logger
+	store        store.Store
+	sessionStore sessions.Store
 }
 
-func NewServer(store store.Store) *server {
+func NewServer(store store.Store, sessionStore sessions.Store) *server {
 	s := &server{
-		router: mux.NewRouter(),
-		logger: logrus.New(),
-		store:  store,
+		router:       mux.NewRouter(),
+		logger:       logrus.New(),
+		store:        store,
+		sessionStore: sessionStore,
 	}
 
 	s.configureRouter()
@@ -29,11 +43,74 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) configureRouter() {
-	s.router.HandleFunc("/users", s.HandleUsersCreate()).Methods("POST")
+	s.router.HandleFunc("/users", s.HandleUsersCreate()).Methods(http.MethodPost)
+	s.router.HandleFunc("/sessions", s.HandleSessionsCreate()).Methods(http.MethodPost)
 }
 
 func (s *server) HandleUsersCreate() http.HandlerFunc {
-	return func(writer http.ResponseWriter, request *http.Request) {
+	type request struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
 
+	return func(w http.ResponseWriter, r *http.Request) {
+		req := &request{}
+		if err := json.NewDecoder(r.Body).Decode(req); err != nil {
+			s.error(w, http.StatusBadRequest, err)
+			return
+		}
+
+		u := &model.User{
+			Email:    req.Email,
+			Password: req.Password,
+		}
+
+		if err := s.store.User().Create(u); err != nil {
+			s.error(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		u.Sanitize()
+		s.respond(w, http.StatusCreated, u)
+	}
+}
+
+func (s *server) HandleSessionsCreate() http.HandlerFunc {
+	type request struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	return func(rw http.ResponseWriter, r *http.Request) {
+		req := &request{}
+		if err := json.NewDecoder(r.Body).Decode(req); err != nil {
+			s.error(rw, http.StatusBadRequest, err)
+			return
+		}
+		u, err := s.store.User().FindByEmail(req.Email)
+		if err != nil || !u.ComparePassword(req.Password) {
+			s.error(rw, http.StatusUnauthorized, errIncorrectEmailOrPassword)
+			return
+		}
+		session, err := s.sessionStore.Get(r, sessionName)
+		if err != nil {
+			s.error(rw, http.StatusInternalServerError, err)
+			return
+		}
+		session.Values["user_id"] = u.ID
+		if err := s.sessionStore.Save(r, rw, session); err != nil {
+			s.error(rw, http.StatusInternalServerError, err)
+			return
+		}
+		s.respond(rw, http.StatusOK, nil)
+	}
+}
+
+func (s *server) error(w http.ResponseWriter, code int, err error) {
+	s.respond(w, code, map[string]string{"error": err.Error()})
+}
+
+func (s *server) respond(w http.ResponseWriter, code int, data interface{}) {
+	w.WriteHeader(code)
+	if data != nil {
+		json.NewEncoder(w).Encode(data)
 	}
 }

@@ -1,3 +1,4 @@
 bind_addr = ":8080"
 log_level = "debug"
 database_url = "host=localhost dbname=go-rest-api user=postgres password=postgres sslmode=disable"
+session_key = "Q2i3TxiStipoLC2bP8X1"
